@@ -21,9 +21,10 @@ class BMS(BaseBMS):
     _HEAD: Final[bytes] = b"\x01\x03"  # header for responses
     _MAX_CELLS: Final[int] = 16
     _MIN_LEN: Final[int] = 5
+    _HEAD_LEN: Final[int] = len(_HEAD)
     _FIELDS: Final[tuple[BMSDp, ...]] = (
         BMSDp("voltage", 3, 2, False, lambda x: x / 100),
-        BMSDp("current", 5, 2, True, lambda x: x / 100),
+        BMSDp("current", 5, 2, True, lambda x: x / 10),
         BMSDp("battery_health", 49, 2, False),
         BMSDp("battery_level", 51, 2, False),
         BMSDp("cycle_charge", 45, 2, False, lambda x: x / 10),
@@ -71,7 +72,9 @@ class BMS(BaseBMS):
             and data.startswith(BMS._HEAD)
             and len(self._frame) >= self._exp_len
         ):
-            self._exp_len = BMS._MIN_LEN + data[2]
+            # Length field is at positions 2-3 (little-endian)
+            length_field = int.from_bytes(data[2:4], byteorder="little")
+            self._exp_len = BMS._HEAD_LEN + 2 + length_field + 2  # header + length + payload + checksum
             self._frame = bytearray()
 
         self._frame += data
@@ -83,12 +86,12 @@ class BMS(BaseBMS):
         if len(self._frame) < self._exp_len:
             return
 
-        if (crc := crc_modbus(data[:-2])) != int.from_bytes(
-            data[-2:], byteorder="little"
+        if (crc := crc_modbus(self._frame[:-2])) != int.from_bytes(
+            self._frame[-2:], byteorder="little"
         ):
             self._log.debug(
                 "invalid checksum 0x%X != 0x%X",
-                int.from_bytes(data[-2:], byteorder="little"),
+                int.from_bytes(self._frame[-2:], byteorder="little"),
                 crc,
             )
             return

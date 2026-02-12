@@ -21,7 +21,6 @@ class BMS(BaseBMS):
     _HEAD: Final[bytes] = b"\x01\x03"  # header for responses
     _MAX_CELLS: Final[int] = 16
     _MIN_LEN: Final[int] = 5
-    _HEAD_LEN: Final[int] = len(_HEAD)
     _FIELDS: Final[tuple[BMSDp, ...]] = (
         BMSDp("voltage", 3, 2, False, lambda x: x / 100),
         BMSDp("current", 5, 2, True, lambda x: x / 10),
@@ -36,7 +35,7 @@ class BMS(BaseBMS):
         # BMSDP("balance", 79, 2, False),
     )
 
-    def __init__(self, ble_device: BLEDevice, keep_alive: bool = True) -> None:
+    def __init__(self, ble_device: BLEDevice, keep_alive: bool = False) -> None:
         """Initialize BMS."""
         super().__init__(ble_device, keep_alive)
         self._msg: bytes = b""
@@ -67,36 +66,64 @@ class BMS(BaseBMS):
     ) -> None:
         """Handle the RX characteristics notify event (new data arrives)."""
 
-        if (
-            len(data) > BMS._MIN_LEN
-            and data.startswith(BMS._HEAD)
-            and len(self._frame) >= self._exp_len
-        ):
-            # Length field is at positions 2-3 (little-endian)
-            length_field = int.from_bytes(data[2:4], byteorder="little")
-            self._exp_len = BMS._HEAD_LEN + 2 + length_field + 2  # header + length + payload + checksum
+        # Check if this is a new frame starting (HEAD marker and enough data for length field)
+        if len(data) > BMS._MIN_LEN and data.startswith(BMS._HEAD):
+            self._log.debug(
+                "New frame detected - clearing buffer. Expected=%d, got=%d",
+                self._exp_len,
+                len(self._frame),
+            )
+            # Reset frame buffer before processing new data
             self._frame = bytearray()
+            # Length field is at position 2 (single byte)
+            self._exp_len = BMS._MIN_LEN + data[2]
+            self._log.debug("New frame length set to %d bytes", self._exp_len)
 
+        # Append new data to frame buffer
         self._frame += data
-        self._log.debug(
-            "RX BLE data (%s): %s", "start" if data == self._frame else "cnt.", data
-        )
 
-        # verify that data is long enough
+        # Log the incoming data
+        if len(self._frame) == len(data):  # First chunk of a new frame
+            debug_msg = f"RX BLE data (start, {len(data)} bytes): {data.hex()}"
+        else:
+            debug_msg = (
+                f"RX BLE data (cnt., total={len(self._frame)}, this={len(data)}) "
+                f"{data.hex() if len(data) <= 32 else f'{data[:16].hex()}... ({len(data)} bytes)'}"
+            )
+        self._log.debug(debug_msg)
+
+        # Verify we have enough data for the expected frame length
         if len(self._frame) < self._exp_len:
+            self._log.debug(
+                "Frame incomplete: need %d bytes, have %d",
+                self._exp_len,
+                len(self._frame),
+            )
+            # Clear frame buffer to prevent stale data from accumulating
+            self._frame = bytearray()
             return
 
-        if (crc := crc_modbus(self._frame[:-2])) != int.from_bytes(
-            self._frame[-2:], byteorder="little"
-        ):
-            self._log.debug(
-                "invalid checksum 0x%X != 0x%X",
-                int.from_bytes(self._frame[-2:], byteorder="little"),
+        # Calculate and verify CRC checksum using accumulated frame buffer
+        crc_calculated = crc_modbus(self._frame[:-2])
+        crc_expected = int.from_bytes(self._frame[-2:], byteorder="little")
+        self._log.debug(
+            "CRC check: calculated=0x%04X, expected=0x%04X (frame len=%d)",
+            crc_calculated,
+            crc_expected,
+            len(self._frame),
+        )
+
+        if (crc := crc_calculated) != crc_expected:
+            self._log.warning(
+                "Invalid checksum 0x%X != 0x%X (frame len=%d)",
                 crc,
+                crc_expected,
+                len(self._frame),
             )
             return
 
         self._msg = bytes(self._frame)
+        self._log.debug("Frame successfully parsed and event set")
         self._msg_event.set()
 
     async def _async_update(self) -> BMSSample:

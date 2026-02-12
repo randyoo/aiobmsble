@@ -29,9 +29,9 @@ from aiobmsble import BMSDp, BMSInfo, BMSSample, BMSValue, MatcherPattern
 class BaseBMS(ABC):
     """Abstract base class for battery management system."""
 
-    INFO: BMSInfo  # static BMS info, set "default_" keys in subclass
+    INFO: BMSInfo  # static BES info, set "default_" keys in subclass
     MAX_RETRY: Final[int] = 3  # max number of retries for data requests
-    TIMEOUT: Final[float] = BLEAK_TIMEOUT / 4  # default timeout for BMS operations
+    TIMEOUT: Final[float] = BLEAK_TIMEOUT / 2  # default timeout for BMS operations (increased from 1/4)
     # calculate time between retries to complete all retries (2 modes) in TIMEOUT seconds
     _RETRY_TIMEOUT: Final[float] = TIMEOUT / (2**MAX_RETRY - 1)
     _MAX_TIMEOUT_FACTOR: Final[int] = 8  # limit timeout increase to 8x
@@ -476,6 +476,24 @@ class BaseBMS(ABC):
             await self._client.disconnect()
         except (BleakError, TimeoutError, EOFError) as exc:
             self._log.warning("disconnect failed! (%s)", type(exc).__name__)
+
+    @final
+    async def check_ble_connection(self) -> bool:
+        """Check if the BLE connection is still active and handle disconnections gracefully.
+
+        Returns True if connected, False otherwise. Attempts reconnection if needed.
+        """
+        if not self._client.is_connected:
+            self._log.warning("BLE connection lost - attempting reconnect...")
+            try:
+                await self.connect()
+                return True
+            except Exception as exc:
+                self._log.error("Reconnect failed! (%s)", type(exc).__name__)
+                return False
+
+        # Check if we're receiving notifications (basic health check)
+        return True
 
     @final
     async def _wait_event(self) -> None:

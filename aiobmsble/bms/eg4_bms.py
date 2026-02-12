@@ -40,6 +40,9 @@ class BMS(BaseBMS):
         super().__init__(ble_device, keep_alive)
         self._msg: bytes = b""
         self._exp_len: int = BMS._MIN_LEN
+        # Track state to handle fragmented packets properly
+        # _frame_complete is True when we've received and processed a complete frame
+        self._frame_complete: bool = False
 
     @staticmethod
     def matcher_dict_list() -> list[MatcherPattern]:
@@ -67,6 +70,7 @@ class BMS(BaseBMS):
         """Handle the RX characteristics notify event (new data arrives)."""
 
         # Check if this is a new frame starting (HEAD marker and enough data for length field)
+        # Only clear buffer if we have no pending incomplete data or the incoming chunk starts with HEAD
         if len(data) > BMS._MIN_LEN and data.startswith(BMS._HEAD):
             self._log.debug(
                 "New frame detected - clearing buffer. Expected=%d, got=%d",
@@ -74,7 +78,12 @@ class BMS(BaseBMS):
                 len(self._frame),
             )
             # Reset frame buffer before processing new data
-            self._frame = bytearray()
+            # BUT only if we've already processed a complete frame (not accumulating)
+            if self._frame_complete:
+                self._frame = bytearray()
+                self._frame_complete = False  # Reset state for new frame
+            else:
+                self._log.debug("Keeping existing incomplete frame to accumulate more data")
             # Length field is at position 2 (single byte)
             self._exp_len = BMS._MIN_LEN + data[2]
             self._log.debug("New frame length set to %d bytes", self._exp_len)
@@ -99,9 +108,7 @@ class BMS(BaseBMS):
                 self._exp_len,
                 len(self._frame),
             )
-            # Clear frame buffer to prevent stale data from accumulating
-            self._frame = bytearray()
-            return
+            return  # Keep frame buffer intact to accumulate more data
 
         # Calculate and verify CRC checksum using accumulated frame buffer
         crc_calculated = crc_modbus(self._frame[:-2])
@@ -121,6 +128,9 @@ class BMS(BaseBMS):
                 len(self._frame),
             )
             return
+
+        # Mark that we've successfully processed a complete frame
+        self._frame_complete = True
 
         self._msg = bytes(self._frame)
         self._log.debug("Frame successfully parsed and event set")

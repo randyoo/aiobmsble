@@ -55,7 +55,7 @@ aiobmsble = "aiobmsble.__main__:main"
 
 [tool.pytest.ini_options]
 minversion = "8.4"
-addopts="--log-level DEBUG"
+addopts="--cov=aiobmsble --cov=examples --cov-branch --cov-report=term-missing --cov-fail-under=100 --log-level DEBUG"
 pythonpath = [
     "aiobmsble",
 ]
